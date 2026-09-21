@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: pip install --quiet curl_cffi
-      - name: poll every 2 minutes
+      - name: poll every 10 minutes
         env:
           GCHAT_WEBHOOK: ${{ secrets.GCHAT_WEBHOOK }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -35,6 +35,6 @@ jobs:
             fi
             [ "$NOW" -ge "$DEADLINE" ] && { echo "deadline reached"; break; }
             [ "$NOW" -ge "$LEG_END" ]  && { echo "leg done - next leg takes over"; break; }
-            sleep 120
+            sleep 600
           done
           echo "leg finished at $(date -u +%H:%M:%S) UTC"
