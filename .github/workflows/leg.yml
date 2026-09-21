@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: pip install --quiet curl_cffi
-      - name: poll every 10 minutes
+      - name: poll every 10 minutes, aligned to :X4 IST
         env:
           GCHAT_WEBHOOK: ${{ secrets.GCHAT_WEBHOOK }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -22,19 +22,29 @@ jobs:
         run: |
           set +e
           DEADLINE=$(python3 -c "import datetime;print(int(datetime.datetime(2026,9,22,16,30,tzinfo=datetime.timezone.utc).timestamp()))")
-          LEG_END=$(( $(date -u +%s) + 20100 ))   # 5h35m, inside the 6h job cap
+          LEG_END=$(( $(date -u +%s) + 20100 ))
           git config user.name  "paradise-watch"
           git config user.email "noreply@github.com"
           while true; do
+            python3 -c "
+import time, datetime
+IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+n = datetime.datetime.now(IST)
+w = ((4 - n.minute) % 10) * 60 - n.second
+if w <= 0:
+    w += 600
+print('aligning: sleep %ds -> next check at :X4 IST' % w, flush=True)
+time.sleep(w)
+"
             NOW=$(date -u +%s)
+            echo "--- check at $(TZ=Asia/Kolkata date +%H:%M:%S) IST ---"
             python alert.py
             if grep -q '"fired": true' state.json; then echo "TIER 1 FOUND - stopping"; break; fi
-            if git diff --quiet state.json; then :; else
+            if ! git diff --quiet state.json; then
               git add state.json
               git commit -q -m "state: $(date -u +%H:%M)" && (git pull --rebase -q origin main 2>/dev/null; git push -q origin HEAD:main || echo "push retry next loop")
             fi
             [ "$NOW" -ge "$DEADLINE" ] && { echo "deadline reached"; break; }
             [ "$NOW" -ge "$LEG_END" ]  && { echo "leg done - next leg takes over"; break; }
-            sleep 600
           done
-          echo "leg finished at $(date -u +%H:%M:%S) UTC"
+          echo "leg finished $(TZ=Asia/Kolkata date +%H:%M:%S) IST"
