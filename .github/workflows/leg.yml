@@ -26,16 +26,7 @@ jobs:
           git config user.name  "paradise-watch"
           git config user.email "noreply@github.com"
           while true; do
-            python3 -c "
-import time, datetime
-IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
-n = datetime.datetime.now(IST)
-w = ((4 - n.minute) % 10) * 60 - n.second
-if w <= 0:
-    w += 600
-print('aligning: sleep %ds -> next check at :X4 IST' % w, flush=True)
-time.sleep(w)
-"
+            python3 align.py
             NOW=$(date -u +%s)
             echo "--- check at $(TZ=Asia/Kolkata date +%H:%M:%S) IST ---"
             python alert.py
