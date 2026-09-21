@@ -1,1 +1,6 @@
-{"runs": 0, "fired": false, "fail_streak": 0, "notified_broken": false}
+{
+ "runs": 1,
+ "fired": false,
+ "fail_streak": 0,
+ "notified_broken": false
+}
