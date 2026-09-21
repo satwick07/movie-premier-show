@@ -24,7 +24,6 @@ jobs:
           GCHAT_WEBHOOK: ${{ secrets.GCHAT_WEBHOOK }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WORKFLOW_FILE: watch.yml
-          DRY_RUNS: '10'
           RADIUS_KM: '6'
         run: python alert.py
       - name: persist state

@@ -38,12 +38,20 @@ Any one source seeing real inventory fires the alert.
   needs nothing, so it still works if impersonation ever fails.
 - **`MinPrice` is a string** (`"250.00"`) — parsed via `float`, not `int`.
 
-## Stop guarantees (it cannot nag you)
-1. Fires once → `state.json.fired = true` → every later run exits immediately.
-2. Past **22 Sep 22:00 IST** → sends one "stopped" note, then nothing.
-3. Either case calls the GitHub API to **disable its own schedule**.
-4. All sources failing 3× in a row sends one `MONITOR BROKEN` alert (silent failure is the
-   worst outcome), then stays quiet.
+## Notification rules
+
+| Situation | Message | Watch |
+|---|---|---|
+| 23 Sep not open | **nothing** | keeps running |
+| **Tier 1 opens** (`VTGB` / `SVYK`) | full alert, times + prices + book links | **STOPS for good** |
+| Any other venue opens | one message, favourites flagged still-closed | keeps running |
+| A *new* venue within 6 km opens | message again (each new one) | keeps running |
+| Same venues, nothing new | nothing | keeps running |
+| 22 Sep 22:00 IST reached | one line, then done | stops |
+| All sources fail 3x running | one `MONITOR BROKEN` message | keeps running |
+
+**Only tier 1 stops the watch.** State lives in `state.json` (`fired`,
+`elsewhere_notified`, `notified_near`) so nothing is ever sent twice.
 
 ## Arming it
 ```bash
@@ -56,8 +64,7 @@ gh workflow run watch.yml --repo satwick07/movie-premier-show
 # 3. kill it early if you change your mind
 gh workflow disable watch.yml --repo satwick07/movie-premier-show
 ```
-`DRY_RUNS=10` makes the first 10 runs post the nearby-theatre list so you can see it works;
-after that it is silent until the 23rd opens.
+It is silent until something actually opens.
 
 ## Mac tier (optional, 2-minute latency, zero GitHub minutes)
 ```bash

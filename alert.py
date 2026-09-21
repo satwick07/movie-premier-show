@@ -1,137 +1,139 @@
 #!/usr/bin/env python3
-"""Decide, notify, dedupe and self-disable. Import-safe: detection lives in check.py."""
+"""Decide, notify, dedupe and self-disable.
+
+Rules:
+  - not open            -> silence
+  - TIER 1 open         -> big alert, then STOP for good
+  - other venue open    -> alert once, keep hunting tier 1
+  - NEW nearby opens    -> alert again (each new one), keep hunting
+  - past deadline       -> one line, then stop
+Only tier 1 stops the watch.
+"""
 import json, os, sys, urllib.request
 from datetime import datetime
 import check as C
 
-STATE = os.environ.get("STATE_FILE", "state.json")
-DRY_RUNS = int(os.environ.get("DRY_RUNS", "10"))
+STATE    = os.environ.get("STATE_FILE", "state.json")
+TIER1    = list(C.FAVS)                      # VTGB, SVYK - only these stop it
 BOOK_MOVIE = ("https://in.bookmyshow.com/movies/bengaluru/the-paradise/buytickets/"
               f"{C.EVENT}/{C.TARGET_BMS}?etCodes={C.EVENT}&language=telugu")
+
 def venue_link(code):
     return f"https://in.bookmyshow.com/cinemas/BANG/x/buytickets/{code}/{C.TARGET_BMS}"
 
 def load():
-    try: return json.load(open(STATE))
-    except Exception: return {"runs": 0, "fired": False, "fail_streak": 0, "notified_broken": False}
+    try: s = json.load(open(STATE))
+    except Exception: s = {}
+    s.setdefault("runs", 0); s.setdefault("fired", False)
+    s.setdefault("fail_streak", 0); s.setdefault("notified_broken", False)
+    s.setdefault("elsewhere_notified", False); s.setdefault("notified_near", [])
+    s.setdefault("deadline_notified", False)
+    return s
 
 def save(s): json.dump(s, open(STATE, "w"), indent=1)
 
-def decide(res):
-    """Return (fired, reasons[]) - any one source seeing real 23rd inventory fires."""
-    reasons = []
-    for code, r in res["favs"].items():
-        if r.get("open"):
-            reasons.append(f"FAV {C.FAVS[code]}: {', '.join(s['t'] for s in r['shows'] if s['t'])}")
+def classify(res):
+    """Split the world into: tier-1 hits, nearby others, far others."""
     mv = res.get("movie") or {}
-    # A favourite's per-venue page can 403 from a datacenter IP (GitHub runners).
-    # The movie-wide API covers every Bengaluru venue, so fall back to it for any
-    # favourite whose own page failed - otherwise a 403 could mask a real opening.
+    # a tier-1 venue page can 403 from a datacenter IP; recover it from the movie-wide payload
     if mv.get("ok"):
         by_code = {v["code"]: v for v in mv.get("venues", [])}
-        for code, r in res["favs"].items():
+        for code in TIER1:
+            r = res["favs"].get(code) or {}
             if not r.get("ok") and code in by_code:
                 v = by_code[code]
-                reasons.append(f"FAV {C.FAVS[code]} (via movie-wide; own page "
-                               f"{r.get('err')}): {', '.join(t for t in v['times'][:8] if t)}")
                 res["favs"][code] = {"ok": True, "open": True, "degraded": True,
                                      "shows": [{"t": t, "avail": None, "min": None}
                                                for t in v["times"]]}
-    if mv.get("ok") and mv.get("served_target") and mv.get("venues"):
-        reasons.append(f"BMS movie-wide: {len(mv['venues'])} Bengaluru venue(s) on the 23rd")
-    elif mv.get("ok") and mv.get("has23"):
-        reasons.append("BMS date strip now lists the 23rd")
+    tier1 = [(c, res["favs"][c]) for c in TIER1
+             if (res["favs"].get(c) or {}).get("open")]
+    others = [v for v in mv.get("venues", [])
+              if mv.get("ok") and v["code"] not in TIER1]
+    near = [v for v in others if v["km"] <= C.RADIUS_KM]
+    far  = [v for v in others if v["km"] >  C.RADIUS_KM]
     dd = res.get("district") or {}
-    if dd.get("ok") and dd.get("open"):
-        reasons.append(f"District: showDates now include {C.TARGET_ISO}")
-    return bool(reasons), reasons
+    # District can only say "the 23rd opened" - no venue detail. If BMS is blocked
+    # that is all we know, so treat it as an opening we cannot attribute.
+    district_only = bool(dd.get("ok") and dd.get("open")) and not (mv.get("ok") and mv.get("venues"))
+    return {"tier1": tier1, "near": near, "far": far,
+            "any_other": bool(others) or district_only, "district_only": district_only}
 
-def build_alert(res, reasons):
-    L = ["*THE PARADISE - 23 SEP TICKETS ARE OPEN* :tada:", ""]
-    L.append("*Why this fired:*")
-    L += [f"  - {r}" for r in reasons]
+def _times(shows):
+    return ", ".join(s["t"] + (f" (Rs{int(float(s['min']))})" if s.get("min") else "")
+                     for s in shows if s.get("t"))
+
+def build_tier1(k):
+    L = ["*THE PARADISE - 23 SEP - YOUR THEATRE IS OPEN* :tada:", ""]
+    L.append("*>>> BOOK NOW <<<*")
+    for code, r in k["tier1"]:
+        L.append(f"*{C.FAVS[code]}*")
+        L.append(f"  {_times(r['shows'])}")
+        if r.get("degraded"): L.append("  _(times via movie-wide API; venue page was blocked)_")
+        L.append(f"  <{venue_link(code)}|BOOK NOW>")
     L.append("")
-    favs_open = [(c, r) for c, r in res["favs"].items() if r.get("open")]
-    if favs_open:
-        L.append("*>>> YOUR FAVOURITES <<<*")
-        for c, r in favs_open:
-            times = ", ".join(f"{s['t']}" + (f" (Rs{int(float(s['min']))})" if s.get("min") else "")
-                              for s in r["shows"] if s.get("t"))
-            L.append(f"*{C.FAVS[c]}*")
-            L.append(f"  {times}")
-            L.append(f"  <{venue_link(c)}|BOOK NOW>")
-        L.append("")
-    mv = res.get("movie") or {}
-    near = [v for v in mv.get("venues", []) if v["km"] <= C.RADIUS_KM] if mv.get("ok") else []
-    if near:
-        L.append(f"*Nearby (<={C.RADIUS_KM:g} km of Marathahalli/Whitefield):*")
-        for v in near:
-            if v["code"] in C.FAVS: continue
-            L.append(f"  *{v['name']}* - {v['km']} km "
-                     f"(M {v['per']['Marathahalli']} / W {v['per']['Whitefield']})")
-            L.append(f"    {', '.join(t for t in v['times'][:8] if t)}")
+    if k["near"]:
+        L.append(f"*Also open nearby (<={C.RADIUS_KM:g} km):*")
+        for v in k["near"]:
+            L.append(f"  *{v['name']}* - {v['km']} km: {', '.join(t for t in v['times'][:6] if t)}")
             L.append(f"    <{venue_link(v['code'])}|book>")
         L.append("")
-    far = [v for v in mv.get("venues", []) if v["km"] > C.RADIUS_KM] if mv.get("ok") else []
-    if far:
-        L.append(f"_{len(far)} more venue(s) further out: " +
-                 ", ".join(f"{v['name'].split(':')[0]} ({v['km']}km)" for v in far[:6]) + "_")
+    if k["far"]: L.append(f"_{len(k['far'])} more venue(s) further out._")
+    L.append(f"<{BOOK_MOVIE}|Full BMS listing>")
+    L.append(f"_{datetime.now(C.IST):%d %b %H:%M IST} - watch STOPPED, this is the last message_")
+    return "\n".join(L)
+
+def build_elsewhere(k):
+    L = ["*23 Sep is OPEN in Bengaluru - but NOT your two theatres yet*", ""]
+    L.append(f"*Still closed:* {' / '.join(C.FAVS[c].split(':')[0] for c in TIER1)}")
+    L.append("")
+    if k["district_only"]:
+        L.append("_District says the 23rd opened; BMS is blocking us, so no venue list yet._")
+    if k["near"]:
+        L.append(f"*Open near you (<={C.RADIUS_KM:g} km):*")
+        for v in k["near"]:
+            L.append(f"  *{v['name']}* - {v['km']} km: {', '.join(t for t in v['times'][:6] if t)}")
+            L.append(f"    <{venue_link(v['code'])}|book>")
         L.append("")
-    L.append(f"<{BOOK_MOVIE}|Full BMS listing for 23 Sep>")
-    L.append(f"_checked {datetime.now(C.IST):%d %b %H:%M IST}_")
+    if k["far"]:
+        L.append(f"_{len(k['far'])} open further out: " +
+                 ", ".join(f"{v['name'].split(':')[0]} ({v['km']}km)" for v in k["far"][:5]) + "_")
+        L.append("")
+    L.append("*Still watching for your two.* Next message = they opened, or a new one near you.")
+    L.append(f"_{datetime.now(C.IST):%d %b %H:%M IST}_")
     return "\n".join(L)
 
-def build_dryrun(res, run_no):
-    L = [f"*Paradise watch - dry run {run_no}/{DRY_RUNS}* (pipe test, 23rd not open yet)", ""]
-    for code, r in res["favs"].items():
-        st = "OPEN" if r.get("open") else (f"closed ({r.get('why','')})" if r["ok"] else f"BLOCKED {r.get('err')} - covered by movie-wide")
-        L.append(f"  FAV {C.FAVS[code]} - {st}")
-    mv = res.get("movie") or {}
-    if mv.get("ok"):
-        L.append(f"  BMS date strip: {', '.join(d for d, dis in mv['strip'] if not dis)} (enabled)")
-    dd = res.get("district") or {}
-    if dd.get("ok"):
-        L.append(f"  District showDates: {', '.join(dd['dates'])}")
+def build_new_near(new):
+    L = [f"*New theatre near you just opened for 23 Sep* ({len(new)})", ""]
+    for v in new:
+        L.append(f"*{v['name']}* - {v['km']} km "
+                 f"(M {v['per']['Marathahalli']} / W {v['per']['Whitefield']})")
+        L.append(f"  {', '.join(t for t in v['times'][:8] if t)}")
+        L.append(f"  <{venue_link(v['code'])}|book>")
     L.append("")
-    L.append("*Your shortlist, ranked by distance (from the live 24 Sep board):*")
-    for i, v in enumerate(NEAR_REF, 1):
-        tag = "  <-- FAV" if v[1] in C.FAVS else ""
-        L.append(f"  {i}. {v[0]} - {v[2]} km{tag}")
-    L.append("")
-    L.append(f"_{datetime.now(C.IST):%d %b %H:%M IST} - will alert the moment the 23rd opens_")
+    L.append("_Your two are still closed. Still watching._")
+    L.append(f"_{datetime.now(C.IST):%d %b %H:%M IST}_")
     return "\n".join(L)
-
-NEAR_REF = [("INOX: Nexus, Whitefield", "FMFB", 1.0),
-            ("V Cinema (Vijayalakshmi): Garudacharpalya", "VTGB", 3.8),
-            ("Sri Vinayaka Cinemas 4K: Varthur", "SVYK", 3.8),
-            ("INOX: Arcadia, Brigade Utopia", "AMNH", 4.1),
-            ("Pushpanjali B N Pura", "PTBK", 4.9),
-            ("Kino Cinemas: Seegehalli Kadugodi", "KINO", 5.0),
-            ("INOX: SBR Horizon, Whitefield-Hoskote Rd", "NSBR", 5.6)]
 
 def send(text):
     hook = os.environ.get("GCHAT_WEBHOOK", "").strip()
     if not hook:
-        print("--- NO GCHAT_WEBHOOK SET; message would have been ---")
-        print(text); print("--- end ---")
-        return False
-    body = json.dumps({"text": text}).encode()
-    req = urllib.request.Request(hook, data=body,
+        print("--- NO GCHAT_WEBHOOK SET; message would have been ---"); print(text); return False
+    req = urllib.request.Request(hook, data=json.dumps({"text": text}).encode(),
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=25) as r:
         print(f"  gchat -> {r.status}")
     return True
 
 def disable_workflow(why):
-    """Switch off the GitHub schedule so it can never nag again."""
     tok, repo = os.environ.get("GITHUB_TOKEN"), os.environ.get("GITHUB_REPOSITORY")
     wf = os.environ.get("WORKFLOW_FILE", "watch.yml")
     if not (tok and repo):
         print(f"  [local] would disable workflow ({why})"); return
-    url = f"https://api.github.com/repos/{repo}/actions/workflows/{wf}/disable"
-    req = urllib.request.Request(url, method="PUT", headers={
-        "Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28"})
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{repo}/actions/workflows/{wf}/disable",
+        method="PUT", headers={"Authorization": f"Bearer {tok}",
+                               "Accept": "application/vnd.github+json",
+                               "X-GitHub-Api-Version": "2022-11-28"})
     try:
         with urllib.request.urlopen(req, timeout=25) as r:
             print(f"  workflow disabled ({why}) -> {r.status}")
@@ -141,42 +143,56 @@ def disable_workflow(why):
 def main():
     s = load()
     now = datetime.now(C.IST)
-    if s.get("fired"):
-        print("already fired; nothing to do"); disable_workflow("already fired"); return 0
+    if s["fired"]:
+        print("tier 1 already found; done"); disable_workflow("already fired"); return 0
     if now > C.DEADLINE:
-        print(f"past deadline ({C.DEADLINE:%d %b %H:%M IST}); stopping")
-        if not s.get("deadline_notified"):
-            send(f"*Paradise watch stopped* - deadline {C.DEADLINE:%d %b %H:%M IST} reached, "
-                 f"23 Sep never opened. No further messages.")
+        print(f"past deadline {C.DEADLINE:%d %b %H:%M IST}")
+        if not s["deadline_notified"]:
+            send(f"*Paradise watch done* - {C.DEADLINE:%d %b %H:%M IST} passed, "
+                 f"your two theatres never opened for 23 Sep. No more messages.")
             s["deadline_notified"] = True; save(s)
         disable_workflow("deadline"); return 0
 
     res = C.main()
-    s["runs"] = s.get("runs", 0) + 1
-    fired, reasons = decide(res)
+    s["runs"] += 1
 
-    sources_ok = [bool((res.get("movie") or {}).get("ok")), bool(res["district"]["ok"])] + \
-                 [r["ok"] for r in res["favs"].values()]
-    if not any(sources_ok):
-        s["fail_streak"] = s.get("fail_streak", 0) + 1
+    ok_flags = [bool((res.get("movie") or {}).get("ok")), bool(res["district"]["ok"])] + \
+               [bool(r.get("ok")) for r in res["favs"].values()]
+    if not any(ok_flags):
+        s["fail_streak"] += 1
         print(f"  ALL SOURCES FAILED (streak {s['fail_streak']})")
-        if s["fail_streak"] >= 3 and not s.get("notified_broken"):
-            send("*Paradise watch MONITOR BROKEN* - every source failed 3x in a row "
-                 "(BMS bot-block or schema change). Check manually: " + BOOK_MOVIE)
+        if s["fail_streak"] >= 3 and not s["notified_broken"]:
+            send("*Paradise watch MONITOR BROKEN* - every source failed 3x. "
+                 "Check by hand: " + BOOK_MOVIE)
             s["notified_broken"] = True
         save(s); return 1
     s["fail_streak"] = 0
 
-    if fired:
-        send(build_alert(res, reasons))
-        s["fired"] = True; save(s)
-        disable_workflow("tickets found")
-        return 0
+    k = classify(res)
 
-    if s["runs"] <= DRY_RUNS:
-        send(build_dryrun(res, s["runs"]))
+    if k["tier1"]:                                   # only this stops the watch
+        print("  *** TIER 1 OPEN ***")
+        send(build_tier1(k)); s["fired"] = True; save(s)
+        disable_workflow("tier 1 found"); return 0
+
+    if k["any_other"]:
+        near_now = [v["code"] for v in k["near"]]
+        if not s["elsewhere_notified"]:
+            print("  open elsewhere (first time) -> notifying, still watching")
+            send(build_elsewhere(k))
+            s["elsewhere_notified"] = True
+            s["notified_near"] = near_now
+        else:
+            new = [v for v in k["near"] if v["code"] not in s["notified_near"]]
+            if new:
+                print(f"  {len(new)} NEW nearby venue(s) -> notifying, still watching")
+                send(build_new_near(new))
+                s["notified_near"] = sorted(set(s["notified_near"]) | {v["code"] for v in new})
+            else:
+                print("  open elsewhere, nothing new near you -> silent")
     else:
-        print(f"  run {s['runs']}: closed, silent (dry-run window over)")
+        print(f"  run {s['runs']}: not open -> silent")
+
     save(s)
     return 0
 
