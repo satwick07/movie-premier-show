@@ -1,0 +1,37 @@
+name: paradise-watch
+on:
+  schedule:
+    - cron: '7,37 * * * *'      # :07 and :37 UTC - off-peak, GitHub cron is best-effort
+  workflow_dispatch:
+
+permissions:
+  contents: write               # commit state.json so runs/fired persist
+  actions: write                # let the job disable its own schedule
+
+concurrency:
+  group: paradise-watch
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest      # NEVER macos-* : billed at 10x
+    timeout-minutes: 3          # hard ceiling on a hung run
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install --quiet curl_cffi
+      - name: check
+        env:
+          GCHAT_WEBHOOK: ${{ secrets.GCHAT_WEBHOOK }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKFLOW_FILE: watch.yml
+          DRY_RUNS: '10'
+          RADIUS_KM: '6'
+        run: python alert.py
+      - name: persist state
+        if: always()
+        run: |
+          git config user.name  "paradise-watch"
+          git config user.email "noreply@github.com"
+          git add state.json
+          git diff --staged --quiet || git commit -m "state: run $(date -u +%H:%M)"
+          git push || echo "push failed (non-fatal)"

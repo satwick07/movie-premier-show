@@ -1,0 +1,6 @@
+last_result.json
+watch.log
+launchd.err
+.webhook
+state.local.json
+__pycache__/
