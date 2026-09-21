@@ -1,36 +1,36 @@
 name: paradise-watch
 on:
-  schedule:
-    - cron: '7,37 * * * *'      # :07 and :37 UTC - off-peak, GitHub cron is best-effort
   workflow_dispatch:
+  schedule:
+    - cron: '7,37 * * * *'      # best-effort safety net only; the chain below is the real watcher
 
 permissions:
-  contents: write               # commit state.json so runs/fired persist
-  actions: write                # let the job disable its own schedule
+  contents: write
+  actions: write
 
 concurrency:
   group: paradise-watch
   cancel-in-progress: false
 
+# GitHub caps ONE JOB at 6h, but a run may chain jobs with `needs`.
+# Four chained jobs x ~5h35m of 2-minute polling covers the whole window to the
+# 22:00 IST deadline WITHOUT depending on cron firing even once.
 jobs:
-  check:
-    runs-on: ubuntu-latest      # NEVER macos-* : billed at 10x
-    timeout-minutes: 3          # hard ceiling on a hung run
-    steps:
-      - uses: actions/checkout@v4
-      - run: pip install --quiet curl_cffi
-      - name: check
-        env:
-          GCHAT_WEBHOOK: ${{ secrets.GCHAT_WEBHOOK }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          WORKFLOW_FILE: watch.yml
-          RADIUS_KM: '6'
-        run: python alert.py
-      - name: persist state
-        if: always()
-        run: |
-          git config user.name  "paradise-watch"
-          git config user.email "noreply@github.com"
-          git add state.json
-          git diff --staged --quiet || git commit -m "state: run $(date -u +%H:%M)"
-          git push || echo "push failed (non-fatal)"
+  leg1:
+    uses: ./.github/workflows/leg.yml
+    secrets: inherit
+  leg2:
+    needs: leg1
+    if: always()
+    uses: ./.github/workflows/leg.yml
+    secrets: inherit
+  leg3:
+    needs: leg2
+    if: always()
+    uses: ./.github/workflows/leg.yml
+    secrets: inherit
+  leg4:
+    needs: leg3
+    if: always()
+    uses: ./.github/workflows/leg.yml
+    secrets: inherit
