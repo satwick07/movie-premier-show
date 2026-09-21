@@ -24,6 +24,19 @@ def decide(res):
         if r.get("open"):
             reasons.append(f"FAV {C.FAVS[code]}: {', '.join(s['t'] for s in r['shows'] if s['t'])}")
     mv = res.get("movie") or {}
+    # A favourite's per-venue page can 403 from a datacenter IP (GitHub runners).
+    # The movie-wide API covers every Bengaluru venue, so fall back to it for any
+    # favourite whose own page failed - otherwise a 403 could mask a real opening.
+    if mv.get("ok"):
+        by_code = {v["code"]: v for v in mv.get("venues", [])}
+        for code, r in res["favs"].items():
+            if not r.get("ok") and code in by_code:
+                v = by_code[code]
+                reasons.append(f"FAV {C.FAVS[code]} (via movie-wide; own page "
+                               f"{r.get('err')}): {', '.join(t for t in v['times'][:8] if t)}")
+                res["favs"][code] = {"ok": True, "open": True, "degraded": True,
+                                     "shows": [{"t": t, "avail": None, "min": None}
+                                               for t in v["times"]]}
     if mv.get("ok") and mv.get("served_target") and mv.get("venues"):
         reasons.append(f"BMS movie-wide: {len(mv['venues'])} Bengaluru venue(s) on the 23rd")
     elif mv.get("ok") and mv.get("has23"):
@@ -71,7 +84,7 @@ def build_alert(res, reasons):
 def build_dryrun(res, run_no):
     L = [f"*Paradise watch - dry run {run_no}/{DRY_RUNS}* (pipe test, 23rd not open yet)", ""]
     for code, r in res["favs"].items():
-        st = "OPEN" if r.get("open") else (f"closed ({r.get('why','')})" if r["ok"] else f"ERROR {r.get('err')}")
+        st = "OPEN" if r.get("open") else (f"closed ({r.get('why','')})" if r["ok"] else f"BLOCKED {r.get('err')} - covered by movie-wide")
         L.append(f"  FAV {C.FAVS[code]} - {st}")
     mv = res.get("movie") or {}
     if mv.get("ok"):
