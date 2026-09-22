@@ -1,7 +1,7 @@
 {
- "runs": 80,
+ "runs": 81,
  "fired": false,
- "fail_streak": 2,
+ "fail_streak": 0,
  "notified_broken": false,
  "elsewhere_notified": true,
  "notified_near": [],
