@@ -14,7 +14,10 @@ from datetime import datetime
 import check as C
 
 STATE    = os.environ.get("STATE_FILE", "state.json")
-TIER1    = list(C.FAVS)                      # VTGB, SVYK - only these stop it
+TIER1    = list(C.FAVS)                      # BMS favourites: VTGB, SVYK
+CINELUXE = "CINELUXE"                        # District-exclusive tier-1 venue
+TIER1_ALL = TIER1 + [CINELUXE]               # the watch stops only when ALL are open
+TIER1_LABEL = dict(C.FAVS); TIER1_LABEL[CINELUXE] = C.DISTRICT_T1_NAME
 BOOK_MOVIE = ("https://in.bookmyshow.com/movies/bengaluru/the-paradise/buytickets/"
               f"{C.EVENT}/{C.TARGET_BMS}?etCodes={C.EVENT}&language=telugu")
 
@@ -27,7 +30,7 @@ def load():
     s.setdefault("runs", 0); s.setdefault("fired", False)
     s.setdefault("fail_streak", 0); s.setdefault("notified_broken", False)
     s.setdefault("elsewhere_notified", False); s.setdefault("notified_near", [])
-    s.setdefault("cineluxe_notified", False)
+    s.setdefault("cineluxe_notified", False); s.setdefault("tier1_found", [])
     s.setdefault("deadline_notified", False)
     return s
 
@@ -86,17 +89,30 @@ def build_cineluxe(k):
     L.append(f"_{datetime.now(C.IST):%d %b %H:%M IST}_")
     return "\n".join(L)
 
-def build_tier1(k):
-    L = ["*THE PARADISE - 23 SEP - YOUR THEATRE IS OPEN* :tada:", ""]
-    L.append("*>>> BOOK NOW <<<*")
-    for nm in k.get("dt1", []):
-        L.append(f"*{nm}*  _(District)_")
-        L.append(f"  <{C.DISTRICT_CINEMA}|BOOK NOW>")
-    for code, r in k["tier1"]:
-        L.append(f"*{C.FAVS[code]}*")
-        L.append(f"  {_times(r['shows'])}")
-        if r.get("degraded"): L.append("  _(times via movie-wide API; venue page was blocked)_")
-        L.append(f"  <{venue_link(code)}|BOOK NOW>")
+def build_tier1(k, newly, found_after):
+    remaining = [c for c in TIER1_ALL if c not in found_after]
+    done = len(found_after) >= len(TIER1_ALL)
+    head = ("*THE PARADISE - 23 SEP - ALL 3 OF YOUR THEATRES ARE OPEN* :tada:" if done
+            else f"*THE PARADISE - 23 SEP - {len(found_after)}/{len(TIER1_ALL)} OF YOUR THEATRES OPEN* :tada:")
+    L = [head, ""]
+    L.append("*>>> JUST OPENED <<<*")
+    for c in newly:
+        if c == CINELUXE:
+            L.append(f"*{C.DISTRICT_T1_NAME}*  _(District)_")
+            L.append(f"  <{C.DISTRICT_CINEMA}|BOOK NOW>")
+        else:
+            r = dict(k["tier1"]).get(c) or {}
+            L.append(f"*{C.FAVS[c]}*")
+            if r.get("shows"): L.append(f"  {_times(r['shows'])}")
+            if r.get("degraded"): L.append("  _(times via movie-wide API; venue page blocked)_")
+            L.append(f"  <{venue_link(c)}|BOOK NOW>")
+    L.append("")
+    already = [c for c in found_after if c not in newly]
+    if already:
+        L.append("_Already open: " + ", ".join(TIER1_LABEL[c].split(':')[0].split(',')[0] for c in already) + "_")
+    if remaining:
+        L.append("*Still waiting on:* " + ", ".join(TIER1_LABEL[c].split(':')[0].split(',')[0] for c in remaining))
+        L.append("_Watch continues._")
     L.append("")
     if k["near"]:
         L.append(f"*Also open nearby (<={C.RADIUS_KM:g} km):*")
@@ -106,12 +122,15 @@ def build_tier1(k):
         L.append("")
     if k["far"]: L.append(f"_{len(k['far'])} more venue(s) further out._")
     L.append(f"<{BOOK_MOVIE}|Full BMS listing>")
-    L.append(f"_{datetime.now(C.IST):%d %b %H:%M IST} - watch STOPPED, this is the last message_")
+    tail = ("watch STOPPED, this is the last message" if done
+            else f"still watching for the remaining {len(remaining)}")
+    L.append(f"_{datetime.now(C.IST):%d %b %H:%M IST} - {tail}_")
     return "\n".join(L)
 
 def build_elsewhere(k):
-    L = ["*23 Sep is OPEN in Bengaluru - but NOT your two theatres yet*", ""]
-    L.append(f"*Still closed:* {' / '.join(C.FAVS[c].split(':')[0] for c in TIER1)}")
+    L = ["*23 Sep is OPEN in Bengaluru - but NOT your theatres yet*", ""]
+    L.append("*Still closed:* " + " / ".join(
+        TIER1_LABEL[c].split(':')[0].split(',')[0] for c in TIER1_ALL))
     L.append("")
     if k["district_only"]:
         L.append("_District says the 23rd opened; BMS is blocking us, so no venue list yet._")
@@ -125,7 +144,7 @@ def build_elsewhere(k):
         L.append(f"_{len(k['far'])} open further out: " +
                  ", ".join(f"{v['name'].split(':')[0]} ({v['km']}km)" for v in k["far"][:5]) + "_")
         L.append("")
-    L.append("*Still watching for your two.* Next message = they opened, or a new one near you.")
+    L.append("*Still watching for your three.* Next message = one opened, or a new one near you.")
     L.append(f"_{datetime.now(C.IST):%d %b %H:%M IST}_")
     return "\n".join(L)
 
@@ -137,7 +156,7 @@ def build_new_near(new):
         L.append(f"  {', '.join(t for t in v['times'][:8] if t)}")
         L.append(f"  <{venue_link(v['code'])}|book>")
     L.append("")
-    L.append("_Your two are still closed. Still watching._")
+    L.append("_Your tier-1 theatres are still closed. Still watching._")
     L.append(f"_{datetime.now(C.IST):%d %b %H:%M IST}_")
     return "\n".join(L)
 
@@ -202,10 +221,20 @@ def main():
         print("  Vinayaka Cineluxe opened the 23rd (film unconfirmed) -> notifying")
         send(build_cineluxe(k)); s["cineluxe_notified"] = True; save(s)
 
-    if k["tier1"] or k["dt1"]:                       # only these stop the watch
-        print("  *** TIER 1 OPEN ***")
-        send(build_tier1(k)); s["fired"] = True; save(s)
-        disable_workflow("tier 1 found"); return 0
+    open_now = [c for c, _ in k["tier1"]] + ([CINELUXE] if k["dt1"] else [])
+    newly = [c for c in open_now if c not in s["tier1_found"]]
+    if newly:
+        found_after = sorted(set(s["tier1_found"]) | set(open_now), key=TIER1_ALL.index)
+        print(f"  *** TIER 1: {newly} opened -> {len(found_after)}/{len(TIER1_ALL)} ***")
+        send(build_tier1(k, newly, found_after))
+        s["tier1_found"] = found_after
+        if len(found_after) >= len(TIER1_ALL):
+            s["fired"] = True; save(s)
+            disable_workflow("all tier 1 open"); return 0
+        save(s); return 0
+    if open_now:
+        print(f"  tier1 {len(s['tier1_found'])}/{len(TIER1_ALL)} open, nothing new -> silent")
+        save(s); return 0
 
     if k["any_other"]:
         near_now = [v["code"] for v in k["near"]]
