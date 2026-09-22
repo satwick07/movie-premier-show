@@ -1,10 +1,1 @@
-{
- "runs": 68,
- "fired": false,
- "fail_streak": 0,
- "notified_broken": false,
- "elsewhere_notified": false,
- "notified_near": [],
- "deadline_notified": false,
- "cineluxe_notified": false
-}
+{"runs":68,"fired":false,"fail_streak":0,"notified_broken":false,"elsewhere_notified":true,"notified_near":[],"deadline_notified":false,"cineluxe_notified":false,"tier1_found":["SVYK"]}
