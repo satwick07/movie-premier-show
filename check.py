@@ -105,8 +105,7 @@ def bms_movie(sess):
 # ---------- source 3: District (no bot protection, zero deps) ----------
 def district():
     try:
-        req = urllib.request.Request(DISTRICT, headers={"User-Agent": UA})
-        b = urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "replace")
+        b = _fetch(DISTRICT)
         m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', b, re.S)
         d = json.loads(m.group(1))
         pp = d["props"]["pageProps"]
@@ -116,6 +115,22 @@ def district():
                 "open": TARGET_ISO in dates and city == "bengaluru"}
     except Exception as e:
         return {"ok": False, "err": f"{type(e).__name__}: {e}"}
+
+def _fetch(url):
+    """District 403s plain urllib from datacenter IPs; try TLS impersonation first."""
+    try:
+        from curl_cffi import requests as _cr
+        r = _cr.get(url, impersonate="chrome", timeout=30)
+        if r.status_code == 200:
+            return r.text
+        last = f"curl_cffi http {r.status_code}"
+    except Exception as e:
+        last = f"curl_cffi {type(e).__name__}"
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    try:
+        return urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "replace")
+    except Exception as e:
+        raise RuntimeError(f"{last}; urllib {type(e).__name__}: {e}")
 
 def _ldjson(html):
     """{date -> set(venue names)} from schema.org ScreeningEvent blocks."""
@@ -142,8 +157,7 @@ def district_movie_venues():
     So when 23 Sep opens it becomes earliest, and this lists that day's venues -
     which is how a District-exclusive tier-1 venue gets confirmed for Paradise."""
     try:
-        req = urllib.request.Request(DISTRICT, headers={"User-Agent": UA})
-        b = urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "replace")
+        b = _fetch(DISTRICT)
         ev = _ldjson(b)
         if not ev: return {"ok": False, "err": "no ld+json"}
         earliest = sorted(ev)[0]
@@ -154,8 +168,7 @@ def district_movie_venues():
 def district_cinema():
     """sessionDates for the District-exclusive venue (dates it is open, any film)."""
     try:
-        req = urllib.request.Request(DISTRICT_CINEMA, headers={"User-Agent": UA})
-        b = urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "replace")
+        b = _fetch(DISTRICT_CINEMA)
         nd = json.loads(re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', b, re.S).group(1))
         cs = nd["props"]["pageProps"]["data"]["serverState"].get(DISTRICT_CINEMA_ID, {})
         sd = cs.get("data", {}).get("sessionDates") or []

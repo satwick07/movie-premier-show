@@ -31,6 +31,7 @@ def load():
     s.setdefault("fail_streak", 0); s.setdefault("notified_broken", False)
     s.setdefault("elsewhere_notified", False); s.setdefault("notified_near", [])
     s.setdefault("cineluxe_notified", False); s.setdefault("tier1_found", [])
+    s.setdefault("has23_notified", False)
     s.setdefault("deadline_notified", False)
     return s
 
@@ -70,13 +71,31 @@ def classify(res):
     # about (3.1 km away) but must NOT stop the watch - same trap as SVYK on BMS.
     dc = res.get("dcinema") or {}
     cineluxe_open = bool(dc.get("ok") and dc.get("open_target"))
+    # EARLIEST possible signal: BMS lists 23 Sep in the date strip but has not yet
+    # served its venue/session data. Seen live at 11:14 IST, a full 10 minutes before
+    # venues appeared at 11:24 - so this must alert on its own, not wait for venues.
+    has23_early = bool(mv.get("ok") and mv.get("has23")) and not mv.get("venues")
     return {"tier1": tier1, "near": near, "far": far, "dt1": dt1,
-            "cineluxe_open": cineluxe_open,
+            "cineluxe_open": cineluxe_open, "has23_early": has23_early,
             "any_other": bool(others) or district_only, "district_only": district_only}
 
 def _times(shows):
     return ", ".join(s["t"] + (f" (Rs{int(float(s['min']))})" if s.get("min") else "")
                      for s in shows if s.get("t"))
+
+def build_early(k):
+    L = ["*23 SEP IS LOADING ON BMS RIGHT NOW* :rotating_light:", ""]
+    L.append("The 23 Sep date just appeared in BMS's strip. Seats are not listed yet -")
+    L.append("inventory usually follows within ~10 minutes.")
+    L.append("")
+    L.append("*Open these NOW and keep refreshing:*")
+    for c in TIER1:
+        L.append(f"  <{venue_link(c)}|{C.FAVS[c].split(':')[0]}>")
+    L.append(f"  <{C.DISTRICT_CINEMA}|Vinayaka Cineluxe (District)>")
+    L.append("")
+    L.append(f"<{BOOK_MOVIE}|Full BMS listing for 23 Sep>")
+    L.append(f"_{datetime.now(C.IST):%d %b %H:%M:%S IST} - you will get another alert the moment a theatre actually opens_")
+    return "\n".join(L)
 
 def build_cineluxe(k):
     L = ["*Vinayaka Cineluxe (Marathahalli) just opened 23 Sep* - 3.1 km away", ""]
@@ -215,6 +234,11 @@ def main():
     s["fail_streak"] = 0
 
     k = classify(res)
+
+    # Earliest warning: the date exists on BMS but seats have not loaded yet.
+    if k.get("has23_early") and not s["has23_notified"] and not k["tier1"] and not k["dt1"]:
+        print("  *** 23 Sep in BMS date strip, venues not yet served -> EARLY ALERT ***")
+        send(build_early(k)); s["has23_notified"] = True; save(s)
 
     # High-signal but unconfirmed: alert once, keep hunting.
     if k["cineluxe_open"] and not s["cineluxe_notified"] and not k["tier1"] and not k["dt1"]:
