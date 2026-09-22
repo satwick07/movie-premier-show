@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Watch for 23-Sep-2026 shows of The Paradise (Telugu) near Marathahalli/Whitefield."""
-import json, math, os, re, sys, urllib.request
+import json, math, os, random, re, sys, time, urllib.request
 from datetime import datetime, timedelta, timezone
 
 EVENT      = "ET00436621"          # The Paradise, Telugu child event
@@ -41,12 +41,31 @@ def walk(o):
     elif isinstance(o, list):
         for v in o: yield from walk(v)
 
+# BMS answers ~half of all datacenter requests with a 403; a single miss used to
+# blind a whole 3-minute cycle, so every request is retried before giving up.
+TRIES = int(os.environ.get("HTTP_TRIES", "6"))
+
+def _get(sess, url, **kw):
+    kw.setdefault("timeout", 30)
+    last = None
+    for i in range(TRIES):
+        try:
+            r = sess.get(url, **kw)
+            if r.status_code == 200:
+                return r
+            last = f"http {r.status_code}"
+        except Exception as e:
+            last = f"{type(e).__name__}: {e}"
+        if i < TRIES - 1:
+            time.sleep(0.6 * (i + 1) + random.uniform(0, 0.5))
+    return type("R", (), {"status_code": 0, "text": "", "url": url, "_err": last})()
+
 # ---------- source 1: BMS per-venue page (sharpest, used for favourites) ----------
 def bms_venue(sess, code):
     url = f"https://in.bookmyshow.com/cinemas/BANG/x/buytickets/{code}/{TARGET_BMS}"
-    r = sess.get(url, timeout=30, allow_redirects=True)
+    r = _get(sess, url, allow_redirects=True)
     if r.status_code != 200:
-        return {"ok": False, "err": f"http {r.status_code}"}
+        return {"ok": False, "err": getattr(r, "_err", None) or f"http {r.status_code}"}
     # BMS redirects away from a date it does not serve -> hard negative
     if TARGET_BMS not in str(r.url).rsplit("/", 1)[-1]:
         return {"ok": True, "open": False, "why": "redirected"}
@@ -77,8 +96,9 @@ def bms_movie(sess):
            f"?appCode=MOBAND2&appVersion=14304&language=en&eventCode={EVENT}"
            "&regionCode=BANG&subRegion=BANG&bmsId=1.0&token=67x1xa33b4x422b361ba7d8"
            f"&lat=12.971599&lon=77.594566&query=&dateCode={TARGET_BMS}")
-    r = sess.get(url, timeout=30)
-    if r.status_code != 200: return {"ok": False, "err": f"http {r.status_code}"}
+    r = _get(sess, url)
+    if r.status_code != 200:
+        return {"ok": False, "err": getattr(r, "_err", None) or f"http {r.status_code}"}
     try: d = r.json()
     except Exception as e: return {"ok": False, "err": f"json: {e}"}
     if "ShowDatesArray" not in d: return {"ok": False, "err": "schema drift"}
@@ -118,14 +138,19 @@ def district():
 
 def _fetch(url):
     """District 403s plain urllib from datacenter IPs; try TLS impersonation first."""
-    try:
-        from curl_cffi import requests as _cr
-        r = _cr.get(url, impersonate="chrome", timeout=30)
-        if r.status_code == 200:
-            return r.text
-        last = f"curl_cffi http {r.status_code}"
-    except Exception as e:
-        last = f"curl_cffi {type(e).__name__}"
+    last = "no attempt"
+    for i in range(TRIES):
+        try:
+            from curl_cffi import requests as _cr
+            r = _cr.get(url, impersonate="chrome", timeout=30)
+            if r.status_code == 200:
+                return r.text
+            last = f"curl_cffi http {r.status_code}"
+        except Exception as e:
+            last = f"curl_cffi {type(e).__name__}"
+            break                       # curl_cffi missing -> retrying will not help
+        if i < TRIES - 1:
+            time.sleep(0.6 * (i + 1) + random.uniform(0, 0.5))
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     try:
         return urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "replace")
