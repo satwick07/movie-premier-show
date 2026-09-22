@@ -1,9 +1,10 @@
 {
- "runs": 57,
+ "runs": 58,
  "fired": false,
  "fail_streak": 0,
  "notified_broken": false,
  "elsewhere_notified": false,
  "notified_near": [],
- "deadline_notified": false
+ "deadline_notified": false,
+ "cineluxe_notified": false
 }
