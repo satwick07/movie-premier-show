@@ -95,7 +95,11 @@ def bms_movie(sess):
     url = ("https://in.bookmyshow.com/api/movies-data/showtimes-by-event"
            f"?appCode=MOBAND2&appVersion=14304&language=en&eventCode={EVENT}"
            "&regionCode=BANG&subRegion=BANG&bmsId=1.0&token=67x1xa33b4x422b361ba7d8"
-           f"&lat=12.971599&lon=77.594566&query=&dateCode={TARGET_BMS}")
+           "&lat=12.971599&lon=77.594566&query=")
+    # NOTE: do NOT send &dateCode. It returns a stale, SMALLER venue set - on
+    # 22 Sep it listed 26 venues and hid VTGB, which the same call without the
+    # parameter showed as open (09:30 PM, avail A). The full response already
+    # carries every date, so we filter client-side instead.
     r = _get(sess, url)
     if r.status_code != 200:
         return {"ok": False, "err": getattr(r, "_err", None) or f"http {r.status_code}"}
