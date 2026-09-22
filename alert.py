@@ -27,6 +27,7 @@ def load():
     s.setdefault("runs", 0); s.setdefault("fired", False)
     s.setdefault("fail_streak", 0); s.setdefault("notified_broken", False)
     s.setdefault("elsewhere_notified", False); s.setdefault("notified_near", [])
+    s.setdefault("cineluxe_notified", False)
     s.setdefault("deadline_notified", False)
     return s
 
@@ -52,19 +53,45 @@ def classify(res):
     near = [v for v in others if v["km"] <= C.RADIUS_KM]
     far  = [v for v in others if v["km"] >  C.RADIUS_KM]
     dd = res.get("district") or {}
-    # District can only say "the 23rd opened" - no venue detail. If BMS is blocked
-    # that is all we know, so treat it as an opening we cannot attribute.
     district_only = bool(dd.get("ok") and dd.get("open")) and not (mv.get("ok") and mv.get("venues"))
-    return {"tier1": tier1, "near": near, "far": far,
+
+    # District-exclusive tier-1 venue (Vinayaka Cineluxe, Marathahalli).
+    # CONFIRMED = the movie page's earliest date is the target AND that venue is
+    # among the venues showing Paradise that day. This is the only way to tie the
+    # venue to the film, because District ignores ?date= on both page types.
+    dm = res.get("dmovie") or {}
+    dt1 = []
+    if dm.get("ok") and dm.get("earliest") == C.TARGET_ISO:
+        dt1 = [v for v in dm.get("venues", []) if C.DISTRICT_T1_MATCH in v.lower()]
+    # UNCONFIRMED = the venue has *some* film on the target date. Worth shouting
+    # about (3.1 km away) but must NOT stop the watch - same trap as SVYK on BMS.
+    dc = res.get("dcinema") or {}
+    cineluxe_open = bool(dc.get("ok") and dc.get("open_target"))
+    return {"tier1": tier1, "near": near, "far": far, "dt1": dt1,
+            "cineluxe_open": cineluxe_open,
             "any_other": bool(others) or district_only, "district_only": district_only}
 
 def _times(shows):
     return ", ".join(s["t"] + (f" (Rs{int(float(s['min']))})" if s.get("min") else "")
                      for s in shows if s.get("t"))
 
+def build_cineluxe(k):
+    L = ["*Vinayaka Cineluxe (Marathahalli) just opened 23 Sep* - 3.1 km away", ""]
+    L.append("_The venue now has shows on 23 Sep. District will not tell us WHICH film"
+             " per date, so Paradise is NOT confirmed there yet._")
+    L.append("")
+    L.append(f"<{C.DISTRICT_CINEMA}|Check Vinayaka Cineluxe on District>")
+    L.append("")
+    L.append("*Still watching* - your BMS favourites and Paradise confirmation.")
+    L.append(f"_{datetime.now(C.IST):%d %b %H:%M IST}_")
+    return "\n".join(L)
+
 def build_tier1(k):
     L = ["*THE PARADISE - 23 SEP - YOUR THEATRE IS OPEN* :tada:", ""]
     L.append("*>>> BOOK NOW <<<*")
+    for nm in k.get("dt1", []):
+        L.append(f"*{nm}*  _(District)_")
+        L.append(f"  <{C.DISTRICT_CINEMA}|BOOK NOW>")
     for code, r in k["tier1"]:
         L.append(f"*{C.FAVS[code]}*")
         L.append(f"  {_times(r['shows'])}")
@@ -170,7 +197,12 @@ def main():
 
     k = classify(res)
 
-    if k["tier1"]:                                   # only this stops the watch
+    # High-signal but unconfirmed: alert once, keep hunting.
+    if k["cineluxe_open"] and not s["cineluxe_notified"] and not k["tier1"] and not k["dt1"]:
+        print("  Vinayaka Cineluxe opened the 23rd (film unconfirmed) -> notifying")
+        send(build_cineluxe(k)); s["cineluxe_notified"] = True; save(s)
+
+    if k["tier1"] or k["dt1"]:                       # only these stop the watch
         print("  *** TIER 1 OPEN ***")
         send(build_tier1(k)); s["fired"] = True; save(s)
         disable_workflow("tier 1 found"); return 0

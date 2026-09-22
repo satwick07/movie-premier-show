@@ -11,6 +11,12 @@ DEADLINE   = datetime(2026, 9, 22, 22, 0, tzinfo=IST)
 DISTRICT   = "https://www.district.in/movies/the-paradise-movie-tickets-in-bengaluru-MV185027"
 TELUGU_FMT = "sfuykkkg9p"
 ANCHORS    = {"Marathahalli": (12.9591, 77.6974), "Whitefield": (12.9698, 77.7500)}
+# District-exclusive tier-1 venue (absent from all 53 BMS venues), 3.1 km from Marathahalli
+DISTRICT_CINEMA = ("https://www.district.in/movies/"
+                   "vinayaka-cineluxe-4k-rgb-laser-dolby-atmos-marathahalli-in-bengaluru-CD43628")
+DISTRICT_CINEMA_ID = "43628"
+DISTRICT_T1_NAME   = "Vinayaka Cineluxe 4K RGB Laser Dolby Atmos, Marathahalli"
+DISTRICT_T1_MATCH  = "vinayaka cineluxe"          # distinct from "Sri Vinayaka Cinemas"
 FAVS       = {"VTGB": "V Cinema (Vijayalakshmi): Garudacharpalya",
               "SVYK": "Sri Vinayaka Cinemas 4K: Varthur"}
 RADIUS_KM  = float(os.environ.get("RADIUS_KM", "6"))
@@ -111,6 +117,52 @@ def district():
     except Exception as e:
         return {"ok": False, "err": f"{type(e).__name__}: {e}"}
 
+def _ldjson(html):
+    """{date -> set(venue names)} from schema.org ScreeningEvent blocks."""
+    out = {}
+    for blk in re.findall(r'<script type="application/ld\+json"[^>]*>(.*?)</script>', html, re.S):
+        try: data = json.loads(blk)
+        except Exception: continue
+        stack = [data]
+        while stack:
+            o = stack.pop()
+            if isinstance(o, dict):
+                if o.get("@type") == "ScreeningEvent":
+                    loc = o.get("location") or {}
+                    nm = loc.get("name") if isinstance(loc, dict) else None
+                    if nm: out.setdefault((o.get("startDate") or "")[:10], set()).add(nm)
+                stack.extend(o.values())
+            elif isinstance(o, list): stack.extend(o)
+    return out
+
+def district_movie_venues():
+    """Venues showing Paradise on District's EARLIEST available date.
+
+    District renders ld+json only for the earliest date and ignores ?date=.
+    So when 23 Sep opens it becomes earliest, and this lists that day's venues -
+    which is how a District-exclusive tier-1 venue gets confirmed for Paradise."""
+    try:
+        req = urllib.request.Request(DISTRICT, headers={"User-Agent": UA})
+        b = urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "replace")
+        ev = _ldjson(b)
+        if not ev: return {"ok": False, "err": "no ld+json"}
+        earliest = sorted(ev)[0]
+        return {"ok": True, "earliest": earliest, "venues": sorted(ev[earliest])}
+    except Exception as e:
+        return {"ok": False, "err": f"{type(e).__name__}: {e}"}
+
+def district_cinema():
+    """sessionDates for the District-exclusive venue (dates it is open, any film)."""
+    try:
+        req = urllib.request.Request(DISTRICT_CINEMA, headers={"User-Agent": UA})
+        b = urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "replace")
+        nd = json.loads(re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', b, re.S).group(1))
+        cs = nd["props"]["pageProps"]["data"]["serverState"].get(DISTRICT_CINEMA_ID, {})
+        sd = cs.get("data", {}).get("sessionDates") or []
+        return {"ok": True, "sessionDates": sd, "open_target": TARGET_ISO in sd}
+    except Exception as e:
+        return {"ok": False, "err": f"{type(e).__name__}: {e}"}
+
 def main():
     now = datetime.now(IST)
     print(f"[{now:%Y-%m-%d %H:%M:%S %Z}] deadline {DEADLINE:%d %b %H:%M} "
@@ -123,7 +175,8 @@ def main():
         sess, have_bms = None, False
         print("  ! curl_cffi missing - BMS sources skipped")
 
-    res = {"favs": {}, "movie": None, "district": district()}
+    res = {"favs": {}, "movie": None, "district": district(),
+           "dmovie": district_movie_venues(), "dcinema": district_cinema()}
     if have_bms:
         for code, label in FAVS.items():
             res["favs"][code] = bms_venue(sess, code)
@@ -141,6 +194,16 @@ def main():
             print(f"  movie-wide: ERR {mv['err']}")
     dd = res["district"]
     print(f"  district: {'showDates=' + str(dd['dates']) if dd['ok'] else 'ERR ' + dd['err']}")
+    dm = res["dmovie"]
+    if dm["ok"]:
+        hit = [v for v in dm["venues"] if DISTRICT_T1_MATCH in v.lower()]
+        print(f"  district venues (earliest={dm['earliest']}): {len(dm['venues'])}"
+              f" | Cineluxe present: {bool(hit)}")
+    else:
+        print(f"  district venues: ERR {dm['err']}")
+    dc = res["dcinema"]
+    print(f"  Vinayaka Cineluxe sessionDates: "
+          f"{dc['sessionDates'] if dc['ok'] else 'ERR ' + dc['err']}")
     print(json.dumps({"fired": False}, indent=0) if False else "")
     json.dump(res, open("last_result.json", "w"), indent=1)
     return res

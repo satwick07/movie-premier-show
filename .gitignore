@@ -6,3 +6,5 @@ state.local.json
 __pycache__/
 test_fire.py
 test_degraded.py
+VCinema.jpeg
+*.jpeg
