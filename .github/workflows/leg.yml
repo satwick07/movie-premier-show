@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: pip install --quiet curl_cffi
-      - name: poll every 10 minutes, aligned to :X4 IST
+      - name: poll every 3 minutes
         env:
           GCHAT_WEBHOOK: ${{ secrets.GCHAT_WEBHOOK }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
