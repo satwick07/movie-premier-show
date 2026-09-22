@@ -1,0 +1,14 @@
+name: verify-sources
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install --quiet curl_cffi
+      - name: probe every source from the runner
+        env:
+          RADIUS_KM: '6'
+        run: python check.py
