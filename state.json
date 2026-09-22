@@ -1,5 +1,5 @@
 {
- "runs": 140,
+ "runs": 141,
  "fired": false,
  "fail_streak": 0,
  "notified_broken": false,
@@ -8,6 +8,7 @@
  "deadline_notified": false,
  "cineluxe_notified": false,
  "tier1_found": [
+  "VTGB",
   "SVYK"
  ],
  "has23_notified": false
