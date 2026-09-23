@@ -1,5 +1,9 @@
 # movie-premier-show — The Paradise, 23 Sep 2026, Bengaluru
 
+> **Personal project.** Personal GitHub account (`satwick07`), personal identity only —
+> commit as `satwick07 <satwicknalli@gmail.com>`, never a work email. See
+> [`CLAUDE.md`](CLAUDE.md).
+
 Watches for **23 Sep 2026** shows of **The Paradise (Telugu, `ET00436621`)** in
 **Bengaluru**, prioritising theatres near **Marathahalli / Whitefield**, and posts to
 Google Chat the moment they open. Then it **switches itself off**.
